@@ -1,14 +1,19 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_jwt_extended import jwt_required, get_jwt_identity, JWTManager, create_access_token
 from datetime import timedelta
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-CORS(app)  # Enable Cross-Origin Resource Sharing for React Frontend
+
+ # Enable Cross-Origin Resource Sharing for React Frontend
+CORS(app, origins=["http://127.0.0.1:5173"], supports_credentials=True, 
+     allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Origin"], 
+     methods=["GET", "POST", "OPTIONS"]) 
 jwt = JWTManager(app)
 
 # Configure the database
@@ -21,13 +26,18 @@ app.config["JWT_COOKIE_SECURE"] = False  # For development (set True in producti
 app.config["JWT_HEADER_NAME"] = "Authorization"  # Default header name
 app.config["JWT_HEADER_TYPE"] = "Bearer"        # Default header type
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)  # JWT token expires in 24 hours
+app.config['UPLOAD_FOLDER'] = 'static/images'
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
 # Import User model (defined in models.py)
-from models import User
+from models import User, Message
 
+# Function to check if the file extension is allowed
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 @app.route("/api/register", methods=["POST"])
 def register():
@@ -76,53 +86,142 @@ def google_login():
     return jsonify({"message": "Email not registered"}), 404
 
 
+# Route to get all users excluding the current authenticated user
+@app.route("/api/users", methods=["GET"])
+@jwt_required()
+def get_users():
+    try:
+        # Get the user ID of the currently authenticated user
+        current_user_id = get_jwt_identity()
+
+        # Query all users excluding the currently authenticated user
+        users = User.query.filter(User.id != current_user_id).all()
+
+        # Prepare the list of users to return
+        user_list = []
+        for user in users:
+            user_list.append({
+                'id': user.id,
+                'name': user.name,
+                'description': user.description,
+                'location': user.location,
+                'picture': user.picture,  # The path to the profile picture
+            })
+
+        return jsonify(user_list), 200
+
+    except Exception as e:
+        return jsonify({"error": f"Error fetching users: {str(e)}"}), 500
+    
+
 @app.route('/api/profile', methods=['POST'])
 @jwt_required()
 def update_profile():
     try:
-        # Get the current user ID from the JWT token
-        current_user_id = get_jwt_identity()  
-        print(f"Current User ID: {current_user_id}")  # Log the user ID for debugging
-
-        # Retrieve the data from the form
+        current_user_id = get_jwt_identity()  # Get user ID from the JWT token
         name = request.form.get('name')
         description = request.form.get('description')
         location = request.form.get('location')
         picture = request.files.get('picture')
 
-        # Validate that all required fields are provided
         if not name or not description or not location or not picture:
             return jsonify({'error': 'All fields are required'}), 400
 
-        # Fetch the user from the database
         user = User.query.get(current_user_id)
         if not user:
             return jsonify({'error': 'User not found'}), 404
 
-        # Ensure the uploads directory exists
-        if not os.path.exists('uploads'):
-            os.makedirs('uploads')
+        # Ensure the upload folder exists
+        upload_folder = app.config['UPLOAD_FOLDER']
+        if not os.path.exists(upload_folder):
+            os.makedirs(upload_folder)
 
-        # Save the picture
-        image_path = os.path.join('uploads', picture.filename)
-        picture.save(image_path)
+        # Save the image locally in the static folder
+        if picture and allowed_file(picture.filename):
+            filename = secure_filename(picture.filename)
+            image_path = os.path.join(upload_folder, filename)
+            picture.save(image_path)
+            user.picture = f'images/{filename}'  # Store the relative path in the database
 
-        # Update the user profile
         user.name = name
         user.description = description
         user.location = location
-        user.picture = image_path
 
-        # Commit the changes to the database
-        db.session.commit()
+        db.session.commit()  # Commit the changes to the database
 
         return jsonify({'message': 'Profile updated successfully'}), 200
-
     except Exception as e:
-        # Log the exception and return an error response
-        error_message = traceback.format_exc()  # Get the full traceback of the error
-        print(error_message)  # Log the error to the console
+        app.logger.error(f"Error updating profile: {str(e)}")
         return jsonify({'error': f'Error updating profile: {str(e)}'}), 500
+
+
+
+# Serve images from the static folder
+@app.route('/static/images/<filename>')
+def serve_image(filename):
+    return send_from_directory(os.path.join(app.root_path, 'static/images'), filename)
+
+@app.route('/api/messages', methods=['POST'])
+@jwt_required()
+def send_message():
+    try:
+        data = request.form
+        sender_id = get_jwt_identity()
+        receiver_id = data.get("receiver_id")
+        message = data.get("message")
+        media = request.files.get("media")
+
+        if not receiver_id:
+            return jsonify({"error": "Receiver ID is required"}), 400
+
+        media_type = None
+        media_url = None
+
+        # Save media file if provided
+        if media and allowed_file(media.filename):
+            filename = secure_filename(media.filename)
+            media_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            media.save(media_path)
+            media_type = media.mimetype.split('/')[0]
+            media_url = f"/static/images/{filename}"
+
+        new_message = Message(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            message=message,
+            media_type=media_type,
+            media_url=media_url
+        )
+        db.session.add(new_message)
+        db.session.commit()
+        return jsonify({"message": "Message sent successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/messages/<int:receiver_id>', methods=['GET'])
+@jwt_required()
+def get_messages(receiver_id):
+    try:
+        sender_id = get_jwt_identity()
+        messages = Message.query.filter(
+            (Message.sender_id == sender_id) & (Message.receiver_id == receiver_id) |
+            (Message.sender_id == receiver_id) & (Message.receiver_id == sender_id)
+        ).order_by(Message.timestamp).all()
+
+        return jsonify([
+            {
+                "id": msg.id,
+                "sender_id": msg.sender_id,
+                "receiver_id": msg.receiver_id,
+                "message": msg.message,
+                "media_type": msg.media_type,
+                "media_url": msg.media_url,
+                "timestamp": msg.timestamp
+            } for msg in messages
+        ]), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
