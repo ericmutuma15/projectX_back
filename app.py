@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 
  # Enable Cross-Origin Resource Sharing for React Frontend
-CORS(app, origins=["http://127.0.0.1:5173"], supports_credentials=True, 
+CORS(app,  resources={r"/api/*": {"origins": "http://127.0.0.1:5173"}}, supports_credentials=True, 
      allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Origin"], 
      methods=["GET", "POST", "OPTIONS"]) 
 jwt = JWTManager(app)
@@ -33,7 +33,7 @@ db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
 # Import User model (defined in models.py)
-from models import User, Message
+from models import User, Message, FriendRequest
 
 # Function to check if the file extension is allowed
 def allowed_file(filename):
@@ -161,7 +161,72 @@ def update_profile():
 def serve_image(filename):
     return send_from_directory(os.path.join(app.root_path, 'static/images'), filename)
 
-@app.route('/api/messages', methods=['POST'])
+
+# Route to send a friend request
+@app.route('/api/send-friend-request', methods=['POST'])
+@jwt_required()
+def send_friend_request():
+    current_user_id = get_jwt_identity()
+    data = request.get_json()
+    recipient_id = data.get('userId')
+
+    if not recipient_id:
+        return jsonify({"message": "User ID is required"}), 400
+
+    # Check if the user is trying to send a request to themselves
+    if current_user_id == recipient_id:
+        return jsonify({"message": "You cannot send a friend request to yourself"}), 400
+
+    # Check if a request already exists
+    existing_request = FriendRequest.query.filter_by(requester_id=current_user_id, recipient_id=recipient_id).first()
+    if existing_request:
+        return jsonify({"message": "Friend request already sent"}), 400
+
+    # Create a new friend request
+    friend_request = FriendRequest(requester_id=current_user_id, recipient_id=recipient_id)
+    db.session.add(friend_request)
+    db.session.commit()
+
+    # Here you can add logic to send a notification to the recipient (e.g., via email, etc.)
+
+    return jsonify({"message": "Friend request sent successfully"}), 200
+
+@app.route('/api/notifications', methods=['GET'])
+@jwt_required()
+def get_notifications():
+    current_user_id = get_jwt_identity()
+    notifications = FriendRequest.query.filter_by(recipient_id=current_user_id, status='pending').all()
+    return jsonify([{
+        "id": req.id,
+        "requester_name": req.requester.name,
+        "timestamp": req.timestamp
+    } for req in notifications])
+
+
+# Route to reject a user
+@app.route('/api/reject-user', methods=['POST'])
+@jwt_required()
+def reject_user():
+    current_user_id = get_jwt_identity()
+    data = request.get_json()
+    recipient_id = data.get('userId')
+
+    if not recipient_id:
+        return jsonify({"message": "User ID is required"}), 400
+
+    # Remove the user from the current user's list (reject the user)
+    friend_request = FriendRequest.query.filter_by(requester_id=recipient_id, recipient_id=current_user_id, status='pending').first()
+    
+    if friend_request:
+        db.session.delete(friend_request)
+        db.session.commit()
+
+        return jsonify({"message": "User rejected successfully"}), 200
+    else:
+        return jsonify({"message": "No pending friend request found"}), 404
+
+
+'''@app.route('/api/messages', methods=['POST'])
 @jwt_required()
 def send_message():
     try:
@@ -222,8 +287,7 @@ def get_messages(receiver_id):
         ]), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
+'''
 if __name__ == "__main__":
     db.create_all()  # Create database tables
     app.run(debug=True)

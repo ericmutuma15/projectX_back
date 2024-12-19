@@ -18,6 +18,13 @@ class User(db.Model):
         'Message', foreign_keys='Message.receiver_id', backref='receiver', lazy='dynamic'
     )
 
+    sent_friend_requests = db.relationship(
+        'FriendRequest', foreign_keys='FriendRequest.requester_id', backref='requester', lazy='dynamic'
+    )
+    received_friend_requests = db.relationship(
+        'FriendRequest', foreign_keys='FriendRequest.recipient_id', backref='recipient', lazy='dynamic'
+    )
+
     def __repr__(self):
         return f"<User {self.name}>"
 
@@ -34,3 +41,15 @@ class Message(db.Model):
 
     def __repr__(self):
         return f"<Message from {self.sender_id} to {self.receiver_id}>"
+
+
+class FriendRequest(db.Model):
+    __tablename__ = 'friend_requests'
+    id = db.Column(db.Integer, primary_key=True)
+    requester_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    recipient_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    status = db.Column(db.String(20), default='pending')  # 'pending', 'accepted', 'rejected'
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self):
+        return f"<FriendRequest from {self.requester_id} to {self.recipient_id}, status={self.status}>"
