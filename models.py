@@ -10,6 +10,7 @@ class User(db.Model):
     description = db.Column(db.String(500))
     location = db.Column(db.String(255))
     picture = db.Column(db.String(255))
+    is_super_user = db.Column(db.Boolean, default=False)
 
     # Relationships
     posts = db.relationship('Post', back_populates='user', lazy='dynamic')

@@ -15,6 +15,7 @@ app = Flask(__name__)
 CORS(app, resources={
     r"/api/*": {"origins": "http://127.0.0.1:5173"},
     r"/static/images/*": {"origins": "*"},
+    r"/static/sidebar_images/*": {"origins": "*"},
     r"/static/uploads/*": {"origins": "*"}
 }, supports_credentials=True, 
 allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Origin"], 
@@ -58,7 +59,9 @@ def register():
         return jsonify({"message": "Email already registered"}), 400
 
     hashed_password = generate_password_hash(password, method="pbkdf2:sha256")
-    new_user = User(name=name, email=email, password=hashed_password)
+    # Make super user for the specific email
+    is_super_user = True if email == "ericmutuma15@gmail.com" else False
+    new_user = User(name=name, email=email, password=hashed_password, is_super_user=is_super_user)
 
     try:
         db.session.add(new_user)
@@ -90,6 +93,9 @@ def google_login():
         return jsonify({"message": "Login successful"}), 200
     return jsonify({"message": "Email not registered"}), 404
 
+
+#serve images
+
 @app.route('/static/images/<filename>')
 def serve_image(filename):
     return send_from_directory(os.path.join(app.root_path, 'static/images'), filename)
@@ -97,6 +103,12 @@ def serve_image(filename):
 @app.route('/static/uploads/<filename>')
 def static_files(filename):
     return send_from_directory(os.path.join(app.root_path, 'static/uploads'), filename)
+
+@app.route('/static/sidebar_images/<filename>')
+def serve_sidebar_image(filename):
+    return send_from_directory(os.path.join(app.root_path, 'static/sidebar_images'), filename)
+
+
 
 @app.route("/api/users", methods=["GET"])
 @jwt_required()
@@ -325,6 +337,83 @@ def get_comments(post_id):
     except Exception as e:
         print(f"Error in get_comments: {e}")
         return jsonify({"error": "Internal Server Error"}), 500
+
+# Upload route for sidebar images
+@app.route("/api/upload_sidebar_image", methods=["POST"])
+@jwt_required()
+def upload_sidebar_image():
+    try:
+        # Fetch current user from JWT token
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(current_user_id)
+
+        if not current_user:
+            return jsonify({"error": "User not found"}), 404
+
+        # Only super user can upload images
+        if current_user.email != "ericmutuma15@gmail.com":
+            return jsonify({"error": "You are not authorized to upload images"}), 403
+
+        # Process the image upload
+        image = request.files.get("image")
+        if not image or not allowed_file(image.filename):
+            return jsonify({"error": "No image provided or invalid format"}), 400
+
+        filename = secure_filename(image.filename)
+        # Create folder if it does not exist
+        if not os.path.exists(app.config["UPLOAD_FOLDER"]):
+            os.makedirs(app.config["UPLOAD_FOLDER"])
+
+        # Save image to the folder
+        image.save(os.path.join(app.config["UPLOAD_FOLDER"], filename))
+
+        # Save image URL to return
+        image_url = f"/static/sidebar_images/{filename}"
+
+        return jsonify({"message": "Image uploaded successfully", "image_url": image_url}), 201
+
+    except Exception as e:
+        app.logger.error(f"Error uploading image: {str(e)}")
+        return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
+
+
+# Define the allowed file extensions
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@app.route("/api/sidebar_images", methods=["GET"])
+def get_sidebar_images():
+    try:
+        # Define the folder path
+        folder_path = os.path.join(app.root_path, "static", "sidebar_images")
+        
+        # Ensure the folder exists
+        if not os.path.exists(folder_path):
+            return jsonify({"error": "Sidebar images folder not found"}), 404
+        
+        # List all allowed image files in the directory
+        files = [f for f in os.listdir(folder_path) if allowed_file(f)]
+
+        if not files:
+            return jsonify({"error": "No images found in the sidebar folder"}), 404
+
+        # Construct response with filenames and URLs
+        images = [
+            {
+                "filename": filename,
+                "url": url_for('serve_sidebar_image', filename=filename, _external=True),
+                "title": os.path.splitext(filename)[0]  # Use filename (without extension) as a placeholder title
+            }
+            for filename in files
+        ]
+
+        return jsonify(images), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching sidebar images: {str(e)}")
+        return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
