@@ -17,10 +17,11 @@ class User(db.Model):
     sent_requests = db.relationship('FriendRequest', foreign_keys='FriendRequest.requester_id', back_populates='requester')
     received_requests = db.relationship('FriendRequest', foreign_keys='FriendRequest.recipient_id', back_populates='recipient')
     likes = db.relationship('Like', back_populates='user', lazy='dynamic')
-    comments = db.relationship('Comment', back_populates='user', lazy='select')  # Change 'dynamic' to 'select'
+    comments = db.relationship('Comment', back_populates='user', lazy='select')
 
     def __repr__(self):
         return f"<User {self.name}>"
+
 
 class Post(db.Model):
     __tablename__ = 'posts'

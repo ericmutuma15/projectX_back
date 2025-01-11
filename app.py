@@ -7,7 +7,9 @@ from flask_cors import CORS
 from flask_migrate import Migrate
 from flask_jwt_extended import jwt_required, get_jwt_identity, JWTManager, create_access_token
 from werkzeug.utils import secure_filename
-from sqlalchemy.orm import joinedload, subqueryload
+from sqlalchemy.orm import joinedload
+from flask_mail import Mail, Message
+from itsdangerous import URLSafeTimedSerializer
 
 app = Flask(__name__)
 
@@ -23,7 +25,7 @@ methods=["GET", "POST", "OPTIONS"])
 
 # JWT Configuration
 jwt = JWTManager(app)
-app.config["JWT_SECRET_KEY"] = "your-secret-key"  # Replace with your secret key
+app.config["JWT_SECRET_KEY"] = os.urandom(24)  
 app.config["JWT_TOKEN_LOCATION"] = ["headers", "cookies"]
 app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
 app.config["JWT_COOKIE_SECURE"] = False  # Set to True in production
@@ -37,8 +39,21 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/images'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 
+# Flask-Mail configuration
+app.config["MAIL_SERVER"] = "smtp.gmail.com"
+app.config["MAIL_PORT"] = 587
+app.config["MAIL_USE_TLS"] = True
+app.config["MAIL_USERNAME"] = "ericmutuma15@gmail.com" 
+app.config["MAIL_PASSWORD"] = "0704478783Crap_" 
+app.config['SECRET_KEY'] = os.urandom(24)  # Secure random key 
+
 db = SQLAlchemy(app)
+mail = Mail(app)
 migrate = Migrate(app, db)
+
+# Serializer for secure tokens
+serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
+
 
 # Import models
 from models import User, Message, FriendRequest, Post, Like, Comment
@@ -48,6 +63,7 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 # Routes
+
 @app.route("/api/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -83,6 +99,7 @@ def login():
 
     return jsonify({"message": "Invalid credentials"}), 401
 
+
 @app.route("/api/google-login", methods=["POST"])
 def google_login():
     data = request.get_json()
@@ -96,7 +113,7 @@ def google_login():
 
 #serve images
 
-@app.route('/static/images/<filename>')
+@app.route('/static/<filename>')
 def serve_image(filename):
     return send_from_directory(os.path.join(app.root_path, 'static/images'), filename)
 
@@ -154,6 +171,45 @@ def get_current_user():
         return jsonify(user_data), 200
     except Exception as e:
         return jsonify({"error": f"Error fetching user data: {str(e)}"}), 500
+
+#endpoint to fetch user posts
+@app.route("/api/user_posts", methods=["GET"])
+@jwt_required()
+def get_user_posts():
+    try:
+        current_user_id = get_jwt_identity()
+
+        # Query posts made by the current user
+        posts = Post.query.filter_by(user_id=current_user_id).order_by(Post.timestamp.desc()).all()
+
+        # Serialize post data
+        post_data = [
+            {
+                "id": post.id,
+                "content": post.content,
+                "media_url": (
+                    url_for('serve_image', filename=post.media_url, _external=True)
+                    if post.media_url else None
+                ),
+                "timestamp": post.timestamp.isoformat(),  # Convert to ISO format for JSON
+                "like_count": post.like_count(),
+                "user": {
+                    "id": post.user.id,
+                    "name": post.user.name,
+                    "profile_picture": (
+                        url_for('serve_image', filename=post.user.picture, _external=True)
+                        if post.user.picture else None
+                    ),
+                },
+            }
+            for post in posts
+        ]
+
+        return jsonify({"posts": post_data}), 200
+    except Exception as e:
+        return jsonify({"error": f"Error fetching posts: {str(e)}"}), 500
+
+
 
 @app.route('/api/profile', methods=['POST'])
 @jwt_required()
@@ -237,6 +293,7 @@ def get_all_posts():
         'id': post.id,
         'user_id': post.user_id,
         'user_name': post.user.name if post.user else "Unknown",
+        'user_photo': post.user.picture if post.user and post.user.picture else None,
         'content': post.content,
         'media_url': post.media_url,
         'timestamp': post.timestamp.isoformat(),
@@ -244,10 +301,12 @@ def get_all_posts():
             'id': comment.id,
             'content': comment.content,
             'user_name': comment.user.name if comment.user else "Unknown",
+            'user_photo': comment.user.picture if comment.user and comment.user.picture else None,
             'timestamp': comment.timestamp.isoformat()
         } for comment in post.comments]
     } for post in posts]
     return jsonify(response), 200
+
 
 @app.route('/api/posts/<int:post_id>/like', methods=['POST'])
 @jwt_required()
