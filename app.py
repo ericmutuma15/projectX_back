@@ -10,8 +10,10 @@ from werkzeug.utils import secure_filename
 from sqlalchemy.orm import joinedload
 from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
+from config import Config
 
 app = Flask(__name__)
+app.config.from_object(Config)
 
 # Enable Cross-Origin Resource Sharing for React Frontend
 CORS(app, resources={
@@ -34,7 +36,7 @@ app.config["JWT_HEADER_TYPE"] = "Bearer"
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
 # Database Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'  # Replace with your preferred database URI
+#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'  # Replace with your preferred database URI
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/images'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
@@ -45,7 +47,7 @@ app.config["MAIL_PORT"] = 587
 app.config["MAIL_USE_TLS"] = True
 app.config["MAIL_USERNAME"] = "ericmutuma15@gmail.com" 
 app.config["MAIL_PASSWORD"] = "0704478783Crap_" 
-app.config['SECRET_KEY'] = os.urandom(24)  # Secure random key 
+#app.config['SECRET_KEY'] = os.urandom(24)  # Secure random key 
 
 db = SQLAlchemy(app)
 mail = Mail(app)
