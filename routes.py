@@ -1,152 +1,91 @@
+import email
 import os
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory, url_for
-from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+from flask import request, jsonify, send_from_directory, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_cors import CORS
-from flask_migrate import Migrate
-from flask_jwt_extended import jwt_required, get_jwt_identity, JWTManager, create_access_token
 from werkzeug.utils import secure_filename
+from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token
 from sqlalchemy.orm import joinedload
-from flask_mail import Mail, Message
-from itsdangerous import URLSafeTimedSerializer
-from config import Config
-
-app = Flask(__name__)
-app.config.from_object(Config)
-
-# Enable Cross-Origin Resource Sharing for React Frontend
-CORS(app, resources={
-    r"/api/*": {"origins": "http://127.0.0.1:5173"},
-    r"/static/images/*": {"origins": "*"},
-    r"/static/sidebar_images/*": {"origins": "*"},
-    r"/static/uploads/*": {"origins": "*"}
-}, supports_credentials=True, 
-allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Origin"], 
-methods=["GET", "POST", "OPTIONS"])
-
-# JWT Configuration
-jwt = JWTManager(app)
-app.config["JWT_SECRET_KEY"] = os.urandom(24)  
-app.config["JWT_TOKEN_LOCATION"] = ["headers", "cookies"]
-app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
-app.config["JWT_COOKIE_SECURE"] = False  # Set to True in production
-app.config["JWT_HEADER_NAME"] = "Authorization"
-app.config["JWT_HEADER_TYPE"] = "Bearer"
-app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
-
-# Database Configuration
-#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'  # Replace with your preferred database URI
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = 'static/images'
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
-
-# Flask-Mail configuration
-app.config["MAIL_SERVER"] = "smtp.gmail.com"
-app.config["MAIL_PORT"] = 587
-app.config["MAIL_USE_TLS"] = True
-app.config["MAIL_USERNAME"] = "ericmutuma15@gmail.com" 
-app.config["MAIL_PASSWORD"] = "" 
-
-
-db = SQLAlchemy(app)
-mail = Mail(app)
-migrate = Migrate(app, db)
-
-# Serializer for secure tokens
-serializer = URLSafeTimedSerializer(app.config["JWT_SECRET_KEY"])
-
-
-# Import models
-from models import User, Message, FriendRequest, Post, Like, Comment
+from models import User, Post, Like, Comment
+from app import db, app, serializer
 
 # Utility to check file extensions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
-# Routes
+def register_routes(app):
+    @app.route("/api/register", methods=["POST"])
+    def register():
+        data = request.get_json()
+        name = data.get("name")
+        email = data.get("email")
+        password = data.get("password")
 
-@app.route("/api/register", methods=["POST"])
-def register():
-    data = request.get_json()
-    name = data.get("name")
-    email = data.get("email")
-    password = data.get("password")
+        if User.query.filter_by(email=email).first():
+            return jsonify({"message": "Email already registered"}), 400
 
-    if User.query.filter_by(email=email).first():
-        return jsonify({"message": "Email already registered"}), 400
+        hashed_password = generate_password_hash(password, method="pbkdf2:sha256")
+        is_super_user = True if email == "ericmutuma15@gmail.com" else False
+        new_user = User(name=name, email=email, password=hashed_password, is_super_user=is_super_user)
 
-    hashed_password = generate_password_hash(password, method="pbkdf2:sha256")
-    # Make super user for the specific email
-    is_super_user = True if email == "ericmutuma15@gmail.com" else False
-    new_user = User(name=name, email=email, password=hashed_password, is_super_user=is_super_user)
+        try:
+            db.session.add(new_user)
+            db.session.commit()
+            return jsonify({"message": "User registered successfully"}), 201
+        except Exception as e:
+            return jsonify({"message": "Registration failed", "error": str(e)}), 500
 
-    try:
-        db.session.add(new_user)
-        db.session.commit()
-        return jsonify({"message": "User registered successfully"}), 201
-    except Exception as e:
-        return jsonify({"message": "Registration failed", "error": str(e)}), 500
+    @app.route("/api/login", methods=["POST"])
+    def login():
+        data = request.get_json()
+        email = data.get("email")
+        password = data.get("password")
 
-@app.route("/api/login", methods=["POST"])
-def login():
-    data = request.get_json()
-    email = data.get("email")
-    password = data.get("password")
+        user = User.query.filter_by(email=email).first()
+        if user and check_password_hash(user.password, password):
+            access_token = create_access_token(identity=user.id)
+            return jsonify({"message": "Login successful", "access_token": access_token}), 200
 
-    user = User.query.filter_by(email=email).first()
-    if user and check_password_hash(user.password, password):
-        access_token = create_access_token(identity=user.id)
-        return jsonify({"message": "Login successful", "access_token": access_token}), 200
+        return jsonify({"message": "Invalid credentials"}), 401
+    
 
-    return jsonify({"message": "Invalid credentials"}), 401
-
-
-@app.route("/api/google-login", methods=["POST"])
-def google_login():
-    data = request.get_json()
-    email = data.get("email")
+    @app.route("/api/google-login", methods=["POST"])
+    def google_login():
+     data = request.get_json()
+     email = data.get("email")
 
     user = User.query.filter_by(email=email).first()
     if user:
         return jsonify({"message": "Login successful"}), 200
     return jsonify({"message": "Email not registered"}), 404
 
+    
 
-#serve images
+    @app.route('/static/<filename>')
+    def serve_image(filename):
+        return send_from_directory(os.path.join(app.root_path, 'static/images'), filename)
 
-@app.route('/static/<filename>')
-def serve_image(filename):
-    return send_from_directory(os.path.join(app.root_path, 'static/images'), filename)
+    @app.route('/<filename>')
+    def static_files(filename):
+        return send_from_directory(os.path.join(app.root_path, 'static/uploads'), filename)
 
-@app.route('/<filename>')
-def static_files(filename):
-    return send_from_directory(os.path.join(app.root_path, 'static/uploads'), filename)
-
-@app.route('/static/sidebar_images/<filename>')
-def serve_sidebar_image(filename):
-    return send_from_directory(os.path.join(app.root_path, 'static/sidebar_images'), filename)
-
-
-
-@app.route("/api/users", methods=["GET"])
-@jwt_required()
-def get_users():
-    try:
-        current_user_id = get_jwt_identity()
-        users = User.query.filter(User.id != current_user_id).all()
-        user_list = [{
-            'id': user.id,
-            'name': user.name,
-            'description': user.description,
-            'location': user.location,
-            'picture': user.picture,
-        } for user in users]
-
-        return jsonify(user_list), 200
-    except Exception as e:
-        return jsonify({"error": f"Error fetching users: {str(e)}"}), 500
-
+    @app.route("/api/users", methods=["GET"])
+    @jwt_required()
+    def get_users():
+        try:
+            current_user_id = get_jwt_identity()
+            users = User.query.filter(User.id != current_user_id).all()
+            user_list = [{
+                'id': user.id,
+                'name': user.name,
+                'description': user.description,
+                'location': user.location,
+                'picture': user.picture,
+            } for user in users]
+            return jsonify(user_list), 200
+        except Exception as e:
+            return jsonify({"error": f"Error fetching users: {str(e)}"}), 500
+        
 @app.route("/api/current_user", methods=["GET"])
 @jwt_required()
 def get_current_user():
@@ -477,6 +416,4 @@ def get_sidebar_images():
         return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
 
 
-if __name__ == "__main__":
-    db.create_all()
-    app.run(debug=True, port=5555)
+    

@@ -1,9 +1,8 @@
 import os
 
 class Config:
-    # General configurations
-    SECRET_KEY = os.environ.get('SECRET_KEY') 
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-
-    # Database configurations
-    SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL', 'sqlite:///users.db')
+    if os.environ.get('FLASK_ENV') == 'production':
+        SQLALCHEMY_DATABASE_URI = os.environ.get('DATABASE_URL')  # Use the connection string from Render
+    else:
+        SQLALCHEMY_DATABASE_URI = 'sqlite:///users.db'  # SQLite for local development
