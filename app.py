@@ -12,7 +12,7 @@ from flask_mail import Mail, Message
 from itsdangerous import URLSafeTimedSerializer
 from config import Config
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static")
 app.config.from_object(Config)
 
 # Enable Cross-Origin Resource Sharing for React Frontend
