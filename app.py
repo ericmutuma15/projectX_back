@@ -36,7 +36,7 @@ app.config["JWT_HEADER_TYPE"] = "Bearer"
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
 # Database Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'  # Replace with your preferred database URI
+#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'  # Replace with your preferred database URI
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/images'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
@@ -54,10 +54,7 @@ mail = Mail(app)
 migrate = Migrate(app, db)
 
 # Serializer for secure tokens
-<<<<<<< HEAD
-=======
 #print("SECRET_KEY:", app.config.get("JWT_SECRET_KEY"))
->>>>>>> a8e718b6314eb02b4e4fc9e5905217940e82175d
 serializer = URLSafeTimedSerializer(app.config["JWT_SECRET_KEY"])
 
 
