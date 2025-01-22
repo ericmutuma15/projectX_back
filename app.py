@@ -66,6 +66,9 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 # Routes
+@app.route('/')
+def home():
+    return send_from_directory('static', 'index.html')
 
 @app.route("/api/register", methods=["POST"])
 def register():
