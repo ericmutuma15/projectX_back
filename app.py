@@ -18,6 +18,7 @@ app.config.from_object(Config)
 # Enable Cross-Origin Resource Sharing for React Frontend
 CORS(app, resources={
     r"/api/*": {"origins": "http://127.0.0.1:5173"},
+    r"/api/*": {"origins": "https://projectx-back.onrender.com"},
     r"/static/images/*": {"origins": "*"},
     r"/static/sidebar_images/*": {"origins": "*"},
     r"/static/uploads/*": {"origins": "*"}
@@ -69,6 +70,10 @@ def allowed_file(filename):
 @app.route('/')
 def home():
     return send_from_directory('static', 'index.html')
+
+@app.route('/<path:path>')
+def serve_static(path):
+    return send_from_directory(app.static_folder, path)
 
 @app.route("/api/register", methods=["POST"])
 def register():
