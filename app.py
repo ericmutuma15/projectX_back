@@ -5,7 +5,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from flask_migrate import Migrate
-from flask_jwt_extended import jwt_required, get_jwt_identity, JWTManager, create_access_token
+from flask_jwt_extended import jwt_required, get_jwt_identity, JWTManager, create_access_token, set_access_cookies
 from werkzeug.utils import secure_filename
 from sqlalchemy.orm import joinedload
 from flask_mail import Mail, Message
@@ -17,8 +17,7 @@ app.config.from_object(Config)
 
 # Enable Cross-Origin Resource Sharing for React Frontend
 CORS(app, resources={
-    r"/api/*": {"origins": "http://127.0.0.1:5173"},
-    r"/api/*": {"origins": "https://projectx-back.onrender.com"},
+    r"/api/*": {"origins": ["http://127.0.0.1:5173", "http://localhost:5173", "https://projectx-back.onrender.com"]},
     r"/static/images/*": {"origins": "*"},
     r"/static/sidebar_images/*": {"origins": "*"},
     r"/static/uploads/*": {"origins": "*"}
@@ -28,7 +27,7 @@ methods=["GET", "POST", "OPTIONS"])
 
 # JWT Configuration
 jwt = JWTManager(app)
-app.config["JWT_SECRET_KEY"] = os.urandom(24)  
+app.config["JWT_SECRET_KEY"] = os.urandom(24)  # Secure random key
 app.config["JWT_TOKEN_LOCATION"] = ["headers", "cookies"]
 app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
 app.config["JWT_COOKIE_SECURE"] = False  # Set to True in production
@@ -37,7 +36,6 @@ app.config["JWT_HEADER_TYPE"] = "Bearer"
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
 
 # Database Configuration
-#app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'  # Replace with your preferred database URI
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/images'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
@@ -49,15 +47,13 @@ app.config["MAIL_USE_TLS"] = True
 app.config["MAIL_USERNAME"] = "ericmutuma15@gmail.com" 
 app.config["MAIL_PASSWORD"] = "" 
 
-
+# Initialize extensions
 db = SQLAlchemy(app)
 mail = Mail(app)
 migrate = Migrate(app, db)
 
 # Serializer for secure tokens
-#print("SECRET_KEY:", app.config.get("JWT_SECRET_KEY"))
 serializer = URLSafeTimedSerializer(app.config["JWT_SECRET_KEY"])
-
 
 # Import models
 from models import User, Message, FriendRequest, Post, Like, Comment
@@ -73,7 +69,20 @@ def home():
 
 @app.route('/<path:path>')
 def serve_static(path):
+    if not path.startswith('api/'):
+        return send_from_directory(app.static_folder, 'index.html')
     return send_from_directory(app.static_folder, path)
+
+# Refresh token endpoint
+@app.route('/api/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh():
+    current_user = get_jwt_identity()
+    new_token = create_access_token(identity=current_user, expires_delta=timedelta(hours=24))
+    response = jsonify({"message": "Token refreshed"})
+    set_access_cookies(response, new_token)
+    return response
+
 
 @app.route("/api/register", methods=["POST"])
 def register():
@@ -97,29 +106,77 @@ def register():
     except Exception as e:
         return jsonify({"message": "Registration failed", "error": str(e)}), 500
 
+import logging
+
+# Enable logging for debugging
+logging.basicConfig(level=logging.DEBUG)
+
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json()
+
+    # Validate email and password
     email = data.get("email")
     password = data.get("password")
+    if not email or not password:
+        logging.error("Email or password missing")
+        return jsonify({"message": "Email and password are required"}), 400
 
+    # Retrieve the user
     user = User.query.filter_by(email=email).first()
-    if user and check_password_hash(user.password, password):
+    if not user:
+        logging.error(f"User with email {email} not found")
+        return jsonify({"message": "Invalid credentials"}), 401
+
+    # Verify password
+    if not check_password_hash(user.password, password):
+        logging.error("Password does not match for user")
+        return jsonify({"message": "Invalid credentials"}), 401
+
+    try:
+        # Generate access token
         access_token = create_access_token(identity=user.id)
-        return jsonify({"message": "Login successful", "access_token": access_token}), 200
+        logging.info(f"Access token generated for user ID {user.id}")
 
-    return jsonify({"message": "Invalid credentials"}), 401
-
+        # Set the token in an HTTP-only cookie
+        response = jsonify({"message": "Login successful"})
+        response.set_cookie(
+            app.config["JWT_ACCESS_COOKIE_NAME"],
+            access_token,
+            httponly=True,
+            secure=app.config["JWT_COOKIE_SECURE"],  # True in production, False in dev
+            samesite="Lax",
+            max_age=24 * 60 * 60  # 24 hours
+        )
+        return response, 200
+    except Exception as e:
+        logging.exception("Error during login process")
+        return jsonify({"message": "Login failed due to server error"}), 500
 
 @app.route("/api/google-login", methods=["POST"])
 def google_login():
     data = request.get_json()
     email = data.get("email")
 
+    # Check if the user exists
     user = User.query.filter_by(email=email).first()
+
     if user:
-        return jsonify({"message": "Login successful"}), 200
-    return jsonify({"message": "Email not registered"}), 404
+        # Generate token for logged-in user
+        access_token = create_access_token(identity=user.id)
+        response = jsonify({"message": "Login successful"})
+        response.set_cookie(
+            app.config["JWT_ACCESS_COOKIE_NAME"],
+            access_token,
+            httponly=True,
+            secure=app.config["JWT_COOKIE_SECURE"],
+            samesite="Lax",
+            max_age=24 * 60 * 60  # 24 hours
+        )
+        return response, 200
+    else:
+        logging.error(f"User with email {email} not registered")
+        return jsonify({"message": "Email not registered"}), 404
 
 
 #serve images
