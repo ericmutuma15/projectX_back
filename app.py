@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory, url_for
+from flask import Flask, request, jsonify, send_from_directory, url_for, Blueprint
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
@@ -21,6 +21,7 @@ from config import Config
 
 app = Flask(__name__, static_folder="static")
 app.config.from_object(Config)
+social_bp = Blueprint('social', __name__)
 
 # Enable Cross-Origin Resource Sharing for React Frontend
 CORS(app, resources={
@@ -278,16 +279,13 @@ def get_current_user():
         app.logger.error(f"Error fetching user data: {str(e)}")
         return jsonify({"error": f"Error fetching user data: {str(e)}"}), 500
 
-
-#endpoint to fetch user posts
-@app.route("/api/user_posts", methods=["GET"])
+#end point to get user posts
+@app.route("/api/user_posts/<int:user_id>", methods=["GET"])
 @jwt_required()
-def get_user_posts():
+def get_user_posts(user_id):
     try:
-        current_user_id = get_jwt_identity()
-
-        # Query posts made by the current user
-        posts = Post.query.filter_by(user_id=current_user_id).order_by(Post.timestamp.desc()).all()
+        # Query posts made by the selected user
+        posts = Post.query.filter_by(user_id=user_id).order_by(Post.timestamp.desc()).all()
 
         # Serialize post data
         post_data = [
@@ -315,6 +313,7 @@ def get_user_posts():
         return jsonify({"posts": post_data}), 200
     except Exception as e:
         return jsonify({"error": f"Error fetching posts: {str(e)}"}), 500
+
 
 
 
@@ -583,6 +582,61 @@ def get_sidebar_images():
     except Exception as e:
         app.logger.error(f"Error fetching sidebar images: {str(e)}")
         return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
+
+
+@social_bp.route('/api/send-friend-request', methods=['POST'])
+@jwt_required()
+def send_friend_request():
+    data = request.get_json()
+    recipient_id = data.get("userId")
+
+    if not recipient_id:
+        return jsonify({"error": "Recipient ID is required"}), 400
+
+    current_user_id = get_jwt_identity()
+    
+    if current_user_id == recipient_id:
+        return jsonify({"error": "You cannot send a request to yourself"}), 400
+
+    existing_request = FriendRequest.query.filter_by(requester_id=current_user_id, recipient_id=recipient_id, status="pending").first()
+    
+    if existing_request:
+        return jsonify({"error": "Friend request already sent"}), 400
+
+    friend_request = FriendRequest(requester_id=current_user_id, recipient_id=recipient_id, status="pending")
+    db.session.add(friend_request)
+    db.session.commit()
+
+    return jsonify({"message": "Friend request sent successfully"}), 201
+
+@app.route("/api/user/<int:user_id>", methods=["GET"])
+@jwt_required()
+def get_user_by_id(user_id):
+    try:
+        # Fetch the user from the database
+        user = User.query.get(user_id)
+
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        # Generate a URL for the profile picture
+        picture_url = (
+            url_for('serve_image', filename=user.picture, _external=True)
+            if user.picture else None
+        )
+
+        # Return user details
+        return jsonify({
+            'id': user.id,
+            'name': user.name,
+            'description': user.description,
+            'location': user.location,
+            'picture': picture_url,
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching user data: {str(e)}")
+        return jsonify({"error": f"Error fetching user data: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
