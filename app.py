@@ -5,7 +5,14 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 from flask_migrate import Migrate
-from flask_jwt_extended import jwt_required, get_jwt_identity, JWTManager, create_access_token, set_access_cookies
+from flask_jwt_extended import (jwt_required,
+                                get_jwt_identity, 
+                                JWTManager, 
+                                create_access_token,
+                                 set_access_cookies, 
+                                 create_refresh_token, 
+                                 set_refresh_cookies,
+                                 unset_jwt_cookies)
 from werkzeug.utils import secure_filename
 from sqlalchemy.orm import joinedload
 from flask_mail import Mail, Message
@@ -28,13 +35,18 @@ methods=["GET", "POST", "OPTIONS"])
 # JWT Configuration
 jwt = JWTManager(app)
 app.config["JWT_SECRET_KEY"] = os.urandom(24)  # Secure random key
-app.config["JWT_TOKEN_LOCATION"] = ["headers", "cookies"]
+app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
+app.config["JWT_COOKIE_CSRF_PROTECT"] = False  # Disable CSRF for testing
 app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
+app.config["JWT_REFRESH_COOKIE_NAME"] = "refresh_token"
 app.config["JWT_COOKIE_SECURE"] = False  # Set to True in production
 app.config["JWT_HEADER_NAME"] = "Authorization"
 app.config["JWT_HEADER_TYPE"] = "Bearer"
-app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)
-
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)  # Access token expiration
+app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=30)  # Refresh token expiration
+app.config['JWT_COOKIE_SAMESITE'] = 'Lax'  # 'Strict' or 'Lax' based on your needs
+app.config['JWT_ACCESS_COOKIE_PATH'] = '/'  # Path for the access token cookie
+app.config['JWT_REFRESH_COOKIE_PATH'] = '/'  # Path for the refresh token cookie
 # Database Configuration
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/images'
@@ -105,6 +117,8 @@ def register():
         return jsonify({"message": "User registered successfully"}), 201
     except Exception as e:
         return jsonify({"message": "Registration failed", "error": str(e)}), 500
+    
+
 
 import logging
 
@@ -119,39 +133,23 @@ def login():
     email = data.get("email")
     password = data.get("password")
     if not email or not password:
-        logging.error("Email or password missing")
         return jsonify({"message": "Email and password are required"}), 400
 
     # Retrieve the user
     user = User.query.filter_by(email=email).first()
-    if not user:
-        logging.error(f"User with email {email} not found")
-        return jsonify({"message": "Invalid credentials"}), 401
+    if not user or not check_password_hash(user.password, password):
+        return jsonify({"message": "Invalid email or password"}), 401
 
-    # Verify password
-    if not check_password_hash(user.password, password):
-        logging.error("Password does not match for user")
-        return jsonify({"message": "Invalid credentials"}), 401
+    # Generate access and refresh tokens
+    access_token = create_access_token(identity=user.id)
+    refresh_token = create_refresh_token(identity=user.id)
 
-    try:
-        # Generate access token
-        access_token = create_access_token(identity=user.id)
-        logging.info(f"Access token generated for user ID {user.id}")
+    # Set cookies with proper properties
+    response = jsonify({"message": "Login successful"})
+    set_access_cookies(response, access_token, max_age=timedelta(hours=1))
+    set_refresh_cookies(response, refresh_token, max_age=timedelta(days=30))
 
-        # Set the token in an HTTP-only cookie
-        response = jsonify({"message": "Login successful"})
-        response.set_cookie(
-            app.config["JWT_ACCESS_COOKIE_NAME"],
-            access_token,
-            httponly=True,
-            secure=app.config["JWT_COOKIE_SECURE"],  # True in production, False in dev
-            samesite="Lax",
-            max_age=24 * 60 * 60  # 24 hours
-        )
-        return response, 200
-    except Exception as e:
-        logging.exception("Error during login process")
-        return jsonify({"message": "Login failed due to server error"}), 500
+    return response, 200
 
 @app.route("/api/google-login", methods=["POST"])
 def google_login():
@@ -162,21 +160,28 @@ def google_login():
     user = User.query.filter_by(email=email).first()
 
     if user:
-        # Generate token for logged-in user
+        # Generate access and refresh tokens
         access_token = create_access_token(identity=user.id)
+        refresh_token = create_refresh_token(identity=user.id)
+
+        # Set cookies with proper properties
         response = jsonify({"message": "Login successful"})
-        response.set_cookie(
-            app.config["JWT_ACCESS_COOKIE_NAME"],
-            access_token,
-            httponly=True,
-            secure=app.config["JWT_COOKIE_SECURE"],
-            samesite="Lax",
-            max_age=24 * 60 * 60  # 24 hours
-        )
+        set_access_cookies(response, access_token, max_age=timedelta(hours=1), secure=True, samesite="Lax")
+        set_refresh_cookies(response, refresh_token, max_age=timedelta(days=30), secure=True, samesite="Lax")
+        print(response.headers)
+
         return response, 200
     else:
         logging.error(f"User with email {email} not registered")
         return jsonify({"message": "Email not registered"}), 404
+
+    
+@app.route("/api/logout", methods=["POST"])
+def logout():
+    response = jsonify({"message": "Logout successful"})
+    unset_jwt_cookies(response)
+    return response, 200
+
 
 
 #serve images
@@ -193,6 +198,30 @@ def static_files(filename):
 def serve_sidebar_image(filename):
     return send_from_directory(os.path.join(app.root_path, 'static/sidebar_images'), filename)
 
+@app.route("/api/token", methods=["GET"])
+@jwt_required(refresh=True)
+def refresh_token():
+    try:
+        # Extract the identity from the refresh token
+        current_user = get_jwt_identity()
+
+        # Generate a new access token
+        access_token = create_access_token(identity=current_user)
+        
+        # Set the new access token in the cookie
+        response = {"access_token": access_token}
+        response.set_cookie(
+            app.config["JWT_ACCESS_COOKIE_NAME"],
+            access_token,
+            httponly=True,
+            secure=app.config["JWT_COOKIE_SECURE"],  # Ensure this is False in development
+            samesite="Lax",
+            max_age=24 * 60 * 60  # 24 hours
+        )
+
+        return jsonify(response), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/users", methods=["GET"])
@@ -214,31 +243,41 @@ def get_users():
         return jsonify({"error": f"Error fetching users: {str(e)}"}), 500
 
 @app.route("/api/current_user", methods=["GET"])
-@jwt_required()
+@jwt_required()  # JWT Authentication will automatically check the cookies
 def get_current_user():
     try:
+        # Get user ID from JWT token (extracted from the cookies)
         current_user_id = get_jwt_identity()
-        user = User.query.filter_by(id=current_user_id).first()
+        app.logger.info(f"Current user ID: {current_user_id}")
 
+        # Check if the token is valid and has a valid user ID
+        if not current_user_id:
+            return jsonify({"error": "Invalid token"}), 422
+
+        # Fetch the user from the database
+        user = User.query.filter_by(id=current_user_id).first()
         if not user:
             return jsonify({"error": "User not found"}), 404
 
+        # If the user has a picture, generate a URL for it
         picture_url = (
             url_for('serve_image', filename=user.picture, _external=True)
             if user.picture else None
         )
 
-        user_data = {
+        # Send the user data as a JSON response
+        data = {
             'id': user.id,
             'name': user.name,
             'description': user.description,
             'location': user.location,
             'picture': picture_url,
         }
-
-        return jsonify(user_data), 200
+        return jsonify(data), 200
     except Exception as e:
+        app.logger.error(f"Error fetching user data: {str(e)}")
         return jsonify({"error": f"Error fetching user data: {str(e)}"}), 500
+
 
 #endpoint to fetch user posts
 @app.route("/api/user_posts", methods=["GET"])
@@ -264,7 +303,7 @@ def get_user_posts():
                 "user": {
                     "id": post.user.id,
                     "name": post.user.name,
-                    "profile_picture": (
+                    "user_photo": (
                         url_for('serve_image', filename=post.user.picture, _external=True)
                         if post.user.picture else None
                     ),
@@ -411,34 +450,37 @@ def like_post(post_id):
 @jwt_required()
 def add_comment(post_id):
     try:
-        user_id = get_jwt_identity()  # Get user ID from the token
-        post = Post.query.get(post_id)
+        user_id = get_jwt_identity()
+        print(f"JWT Identity: {user_id}")  # Debugging
 
+        if not user_id:
+            return jsonify({"error": "Unauthorized: No valid token"}), 401
+
+        post = Post.query.get(post_id)
         if not post:
             return jsonify({"error": "Post not found"}), 404
 
-        # Get the content of the comment from the request
         comment_content = request.json.get('content')
-
         if not comment_content:
             return jsonify({"error": "Comment content is required"}), 400
 
-        # Create a new comment object and add it to the database
         new_comment = Comment(content=comment_content, user_id=user_id, post_id=post.id)
         db.session.add(new_comment)
         db.session.commit()
 
-        # Return the newly created comment
         return jsonify({
             "id": new_comment.id,
             "content": new_comment.content,
             "user_name": new_comment.user.name,  
+            "user_photo": new_comment.user.picture,  
+            "timestamp": new_comment.timestamp.isoformat()
         }), 201
 
     except Exception as e:
         print(f"Error in add_comment: {e}")
         db.session.rollback()
         return jsonify({"error": "Internal Server Error"}), 500
+    
 
 # New endpoint to get comments for a specific post
 @app.route('/api/posts/<int:post_id>/comments', methods=['GET'])
