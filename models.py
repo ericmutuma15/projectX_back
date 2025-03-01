@@ -97,5 +97,16 @@ class FriendRequest(db.Model):
     requester = db.relationship('User', foreign_keys=[requester_id], back_populates='sent_requests')
     recipient = db.relationship('User', foreign_keys=[recipient_id], back_populates='received_requests')
 
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    message = db.Column(db.String(255), nullable=False)
+    type = db.Column(db.String(50), nullable=False)
+    friend_request_id = db.Column(db.Integer, db.ForeignKey('friend_requests.id'), nullable=False)  # ✅ New Field
+
+    # Relationships (optional, but useful)
+    friend_request = db.relationship("FriendRequest", backref="notifications")
+
+    
     def __repr__(self):
         return f"<FriendRequest from {self.requester_id} to {self.recipient_id}, status={self.status}>"

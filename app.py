@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory, url_for, Blueprint
+from flask import Flask, request, jsonify, send_from_directory, url_for
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
@@ -21,7 +21,6 @@ from config import Config
 
 app = Flask(__name__, static_folder="static")
 app.config.from_object(Config)
-social_bp = Blueprint('social', __name__)
 
 # Enable Cross-Origin Resource Sharing for React Frontend
 CORS(app, resources={
@@ -64,12 +63,13 @@ app.config["MAIL_PASSWORD"] = ""
 db = SQLAlchemy(app)
 mail = Mail(app)
 migrate = Migrate(app, db)
+#social_bp = Blueprint('social', __name__)
 
 # Serializer for secure tokens
 serializer = URLSafeTimedSerializer(app.config["JWT_SECRET_KEY"])
 
 # Import models
-from models import User, Message, FriendRequest, Post, Like, Comment
+from models import User, Message, FriendRequest, Post, Like, Comment, Notification
 
 # Utility to check file extensions
 def allowed_file(filename):
@@ -314,6 +314,42 @@ def get_user_posts(user_id):
     except Exception as e:
         return jsonify({"error": f"Error fetching posts: {str(e)}"}), 500
 
+@app.route("/api/user_posts", methods=["GET"])
+@jwt_required()
+def get_current_user_posts():
+    try:
+        # Get the logged-in user's ID
+        current_user_id = get_jwt_identity()
+
+        # Query posts made by the logged-in user
+        posts = Post.query.filter_by(user_id=current_user_id).order_by(Post.timestamp.desc()).all()
+
+        # Serialize post data
+        post_data = [
+            {
+                "id": post.id,
+                "content": post.content,
+                "media_url": (
+                    url_for('static_files', filename=post.media_url, _external=True)
+                    if post.media_url else None
+                ),
+                "timestamp": post.timestamp.isoformat(),  # Convert to ISO format for JSON
+                "like_count": post.like_count(),
+                "user": {
+                    "id": post.user.id,
+                    "name": post.user.name,
+                    "user_photo": (
+                        url_for('serve_image', filename=post.user.picture, _external=True)
+                        if post.user.picture else None
+                    ),
+                },
+            }
+            for post in posts
+        ]
+
+        return jsonify({"posts": post_data}), 200
+    except Exception as e:
+        return jsonify({"error": f"Error fetching posts: {str(e)}"}), 500
 
 
 
@@ -583,31 +619,52 @@ def get_sidebar_images():
         app.logger.error(f"Error fetching sidebar images: {str(e)}")
         return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
 
-
-@social_bp.route('/api/send-friend-request', methods=['POST'])
+#endpoint to send friend request
+@app.route('/api/send-friend-request', methods=['POST'])
 @jwt_required()
 def send_friend_request():
     data = request.get_json()
-    recipient_id = data.get("userId")
+    recipient_id = data.get("userId")  # Ensure frontend sends the correct key
 
     if not recipient_id:
         return jsonify({"error": "Recipient ID is required"}), 400
 
     current_user_id = get_jwt_identity()
-    
+
     if current_user_id == recipient_id:
         return jsonify({"error": "You cannot send a request to yourself"}), 400
 
-    existing_request = FriendRequest.query.filter_by(requester_id=current_user_id, recipient_id=recipient_id, status="pending").first()
-    
+    existing_request = FriendRequest.query.filter_by(
+        requester_id=current_user_id,
+        recipient_id=recipient_id,
+        status="pending"
+    ).first()
+
     if existing_request:
         return jsonify({"error": "Friend request already sent"}), 400
 
-    friend_request = FriendRequest(requester_id=current_user_id, recipient_id=recipient_id, status="pending")
+    # Save the friend request
+    friend_request = FriendRequest(
+        requester_id=current_user_id,
+        recipient_id=recipient_id,
+        status="pending"
+    )
     db.session.add(friend_request)
+    db.session.commit()  # Commit to generate friend_request.id
+
+    # Create a notification for the recipient, linking to the friend request
+    notification = Notification(
+        user_id=recipient_id,
+        message="You have a new friend request!",
+        type="friend_request",
+        friend_request_id=friend_request.id  # Store request ID for reference
+    )
+    db.session.add(notification)
     db.session.commit()
 
-    return jsonify({"message": "Friend request sent successfully"}), 201
+    return jsonify({"message": "Friend request sent!"}), 201
+
+
 
 @app.route("/api/user/<int:user_id>", methods=["GET"])
 @jwt_required()
@@ -637,6 +694,84 @@ def get_user_by_id(user_id):
     except Exception as e:
         app.logger.error(f"Error fetching user data: {str(e)}")
         return jsonify({"error": f"Error fetching user data: {str(e)}"}), 500
+
+
+# Get notifications for the logged-in user
+from flask import request
+
+@app.route('/api/notifications', methods=['GET'])
+@jwt_required()
+def get_notifications():
+    current_user_id = get_jwt_identity()
+    
+    base_url = request.host_url  # Gets "http://127.0.0.1:5555/" or your deployed URL
+
+    notifications = db.session.query(
+        Notification.id,
+        Notification.message,
+        Notification.type,
+        Notification.friend_request_id,
+        FriendRequest.requester_id,
+        User.name.label("requester_name"),
+        User.picture.label("requester_profile_pic")
+    ).join(FriendRequest, FriendRequest.id == Notification.friend_request_id, isouter=True
+    ).join(User, User.id == FriendRequest.requester_id, isouter=True
+    ).filter(Notification.user_id == current_user_id).all()
+    
+    notification_list = [
+        {
+            "id": notif.id,
+            "message": notif.message,
+            "type": notif.type,
+            "friend_request_id": notif.friend_request_id,
+            "requester_id": notif.requester_id,
+            "requester_name": notif.requester_name if notif.requester_name else "Unknown User",
+            "requester_profile_pic": (
+                f"{base_url}static/{notif.requester_profile_pic}"
+                if notif.requester_profile_pic else f"{base_url}static/default.jpg"
+            )  # Ensure full URL for images
+        }
+        for notif in notifications
+    ]
+
+    print("Notifications for user", current_user_id, ":", notification_list)  # Debugging log
+    return jsonify(notification_list), 200
+
+
+
+# Accept friend request
+@app.route('/api/accept-friend-request', methods=['POST'])
+@jwt_required()
+def accept_friend_request():
+    data = request.get_json()
+    request_id = data.get("requestId")
+    current_user_id = get_jwt_identity()
+
+    if not request_id:
+        return jsonify({"error": "Request ID is required"}), 400
+
+    friend_request = FriendRequest.query.get(request_id)
+
+    if not friend_request:
+        return jsonify({"error": "Friend request not found"}), 404
+
+    if friend_request.recipient_id != current_user_id:
+        return jsonify({"error": "You are not the recipient of this friend request"}), 403
+
+    # Accept friend request
+    friend_request.status = "accepted"
+    db.session.commit()
+
+    # Notify the requester that the request was accepted
+    new_notification = Notification(
+        user_id=friend_request.requester_id,
+        message="Your friend request was accepted!",
+        type="friend_accept"
+    )
+    db.session.add(new_notification)
+    db.session.commit()
+
+    return jsonify({"message": "Friend request accepted!"}), 200
 
 
 if __name__ == "__main__":
