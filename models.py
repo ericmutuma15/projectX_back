@@ -97,7 +97,12 @@ class FriendRequest(db.Model):
     requester = db.relationship('User', foreign_keys=[requester_id], back_populates='sent_requests')
     recipient = db.relationship('User', foreign_keys=[recipient_id], back_populates='received_requests')
 
+    def __repr__(self):
+        return f"<FriendRequest from {self.requester_id} to {self.recipient_id}, status={self.status}>"
+
+
 class Notification(db.Model):
+    __tablename__ = 'notification'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     message = db.Column(db.String(255), nullable=False)
@@ -106,7 +111,19 @@ class Notification(db.Model):
 
     # Relationships (optional, but useful)
     friend_request = db.relationship("FriendRequest", backref="notifications")
-
     
-    def __repr__(self):
-        return f"<FriendRequest from {self.requester_id} to {self.recipient_id}, status={self.status}>"
+
+
+class Friendship(db.Model):
+    __tablename__ = 'friendship'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    friend_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship("User", foreign_keys=[user_id], backref="friends")
+    friend = db.relationship("User", foreign_keys=[friend_id], backref="friend_of")
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'friend_id', name='unique_friendship'),)
+    
+    

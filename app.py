@@ -69,7 +69,7 @@ migrate = Migrate(app, db)
 serializer = URLSafeTimedSerializer(app.config["JWT_SECRET_KEY"])
 
 # Import models
-from models import User, Message, FriendRequest, Post, Like, Comment, Notification
+from models import User, Message, FriendRequest, Post, Like, Comment, Notification, Friendship
 
 # Utility to check file extensions
 def allowed_file(filename):
@@ -230,7 +230,20 @@ def refresh_token():
 def get_users():
     try:
         current_user_id = get_jwt_identity()
-        users = User.query.filter(User.id != current_user_id).all()
+
+        # Get friend IDs in both directions (since friendships are mutual)
+        friend_ids_query1 = db.session.query(Friendship.friend_id).filter(Friendship.user_id == current_user_id)
+        friend_ids_query2 = db.session.query(Friendship.user_id).filter(Friendship.friend_id == current_user_id)
+        friend_ids = friend_ids_query1.union(friend_ids_query2).all()
+        friend_ids = {fid[0] for fid in friend_ids}  # Convert list of tuples to a set
+
+        # Query for users who are not the current user and not in the friend IDs
+        users = User.query.filter(
+            User.id != current_user_id,
+            ~User.id.in_(friend_ids)
+        ).all()
+
+        # Build the response list with the desired fields
         user_list = [{
             'id': user.id,
             'name': user.name,
@@ -240,9 +253,11 @@ def get_users():
         } for user in users]
 
         return jsonify(user_list), 200
+
     except Exception as e:
         return jsonify({"error": f"Error fetching users: {str(e)}"}), 500
-
+    
+    
 @app.route("/api/current_user", methods=["GET"])
 @jwt_required()  # JWT Authentication will automatically check the cookies
 def get_current_user():
@@ -696,8 +711,8 @@ def get_user_by_id(user_id):
         return jsonify({"error": f"Error fetching user data: {str(e)}"}), 500
 
 
-# Get notifications for the logged-in user
-from flask import request
+from flask import request, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
 
 @app.route('/api/notifications', methods=['GET'])
 @jwt_required()
@@ -712,11 +727,17 @@ def get_notifications():
         Notification.type,
         Notification.friend_request_id,
         FriendRequest.requester_id,
+        FriendRequest.status,  # Include friend request status
         User.name.label("requester_name"),
         User.picture.label("requester_profile_pic")
     ).join(FriendRequest, FriendRequest.id == Notification.friend_request_id, isouter=True
     ).join(User, User.id == FriendRequest.requester_id, isouter=True
-    ).filter(Notification.user_id == current_user_id).all()
+    ).filter(Notification.user_id == current_user_id)
+
+    # Exclude notifications for already accepted friend requests
+    notifications = notifications.filter(
+        (Notification.type != "friend_request") | (FriendRequest.status != "accepted")
+    ).all()
     
     notification_list = [
         {
@@ -758,20 +779,55 @@ def accept_friend_request():
     if friend_request.recipient_id != current_user_id:
         return jsonify({"error": "You are not the recipient of this friend request"}), 403
 
+    if friend_request.status == "accepted":
+        return jsonify({"error": "Friend request already accepted"}), 400
+
     # Accept friend request
     friend_request.status = "accepted"
-    db.session.commit()
+
+    # Create friendship records for both users
+    friendship1 = Friendship(user_id=current_user_id, friend_id=friend_request.requester_id)
+    friendship2 = Friendship(user_id=friend_request.requester_id, friend_id=current_user_id)
+
+    db.session.add(friendship1)
+    db.session.add(friendship2)
 
     # Notify the requester that the request was accepted
     new_notification = Notification(
         user_id=friend_request.requester_id,
-        message="Your friend request was accepted!",
+        message=f"{friend_request.recipient.name} accepted your friend request!",
         type="friend_accept"
     )
     db.session.add(new_notification)
+
     db.session.commit()
 
     return jsonify({"message": "Friend request accepted!"}), 200
+
+
+#Fetch friends list
+@app.route('/api/friends', methods=['GET'])
+@jwt_required()
+def get_friends():
+    current_user_id = get_jwt_identity()
+
+    friends = db.session.query(
+        User.id,
+        User.name,
+        User.picture
+    ).join(Friendship, Friendship.friend_id == User.id
+    ).filter(Friendship.user_id == current_user_id).all()
+
+    friends_list = [
+        {
+            "id": friend.id,
+            "name": friend.name,
+            "profile_pic": f"{request.host_url}static/{friend.picture}" if friend.picture else f"{request.host_url}static/default.jpg"
+        }
+        for friend in friends
+    ]
+
+    return jsonify(friends_list), 200
 
 
 if __name__ == "__main__":
