@@ -52,13 +52,6 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/images'
 app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif'}
 
-# Flask-Mail configuration
-app.config["MAIL_SERVER"] = "smtp.gmail.com"
-app.config["MAIL_PORT"] = 587
-app.config["MAIL_USE_TLS"] = True
-app.config["MAIL_USERNAME"] = "ericmutuma15@gmail.com" 
-app.config["MAIL_PASSWORD"] = "" 
-
 # Initialize extensions
 db = SQLAlchemy(app)
 mail = Mail(app)
@@ -714,48 +707,66 @@ def get_user_by_id(user_id):
 from flask import request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
+
+from sqlalchemy import case
+from sqlalchemy.orm import aliased
+
 @app.route('/api/notifications', methods=['GET'])
 @jwt_required()
 def get_notifications():
     current_user_id = get_jwt_identity()
-    
-    base_url = request.host_url  # Gets "http://127.0.0.1:5555/" or your deployed URL
+    base_url = request.host_url  # e.g., "http://127.0.0.1:5555/"
 
-    notifications = db.session.query(
-        Notification.id,
-        Notification.message,
-        Notification.type,
-        Notification.friend_request_id,
-        FriendRequest.requester_id,
-        FriendRequest.status,  # Include friend request status
-        User.name.label("requester_name"),
-        User.picture.label("requester_profile_pic")
-    ).join(FriendRequest, FriendRequest.id == Notification.friend_request_id, isouter=True
-    ).join(User, User.id == FriendRequest.requester_id, isouter=True
-    ).filter(Notification.user_id == current_user_id)
+    # Create aliases for the User model for double join:
+    requester = aliased(User)
+    acceptor = aliased(User)
 
-    # Exclude notifications for already accepted friend requests
-    notifications = notifications.filter(
-        (Notification.type != "friend_request") | (FriendRequest.status != "accepted")
-    ).all()
-    
+    notifications = (
+        db.session.query(
+            Notification.id,
+            Notification.message,
+            Notification.type,
+            Notification.friend_request_id,
+            FriendRequest.status.label("friend_request_status"),
+            # For notifications of type "friend_accept", use the acceptor's name; otherwise, use the requester's name.
+            case(
+                (Notification.type == "friend_accept", acceptor.name),
+                else_=requester.name
+            ).label("originator_name"),
+            # Similarly for profile picture.
+            case(
+                (Notification.type == "friend_accept", acceptor.picture),
+                else_=requester.picture
+            ).label("originator_profile_pic")
+        )
+        .outerjoin(FriendRequest, FriendRequest.id == Notification.friend_request_id)
+        .outerjoin(requester, requester.id == FriendRequest.requester_id)
+        .outerjoin(acceptor, acceptor.id == FriendRequest.recipient_id)
+        .filter(Notification.user_id == current_user_id)
+        .filter(
+            (Notification.type != "friend_request") | (FriendRequest.status != "accepted")
+        )
+        .all()
+    )
+
     notification_list = [
         {
             "id": notif.id,
             "message": notif.message,
             "type": notif.type,
             "friend_request_id": notif.friend_request_id,
-            "requester_id": notif.requester_id,
-            "requester_name": notif.requester_name if notif.requester_name else "Unknown User",
-            "requester_profile_pic": (
-                f"{base_url}static/{notif.requester_profile_pic}"
-                if notif.requester_profile_pic else f"{base_url}static/default.jpg"
-            )  # Ensure full URL for images
+            "friend_request_status": notif.friend_request_status or "unknown",
+            "originator_name": notif.originator_name or "Unknown User",
+            "originator_profile_pic": (
+                f"{base_url}static/{notif.originator_profile_pic}"
+                if notif.originator_profile_pic
+                else f"{base_url}static/default.jpg"
+            )
         }
         for notif in notifications
     ]
 
-    print("Notifications for user", current_user_id, ":", notification_list)  # Debugging log
+    #print(f"Notifications for user {current_user_id}: {notification_list}")
     return jsonify(notification_list), 200
 
 
@@ -782,27 +793,36 @@ def accept_friend_request():
     if friend_request.status == "accepted":
         return jsonify({"error": "Friend request already accepted"}), 400
 
-    # Accept friend request
+    # ✅ Accept friend request
     friend_request.status = "accepted"
 
-    # Create friendship records for both users
-    friendship1 = Friendship(user_id=current_user_id, friend_id=friend_request.requester_id)
-    friendship2 = Friendship(user_id=friend_request.requester_id, friend_id=current_user_id)
+    # ✅ Create friendship (only one record needed)
+    new_friendship = Friendship(user_id=current_user_id, friend_id=friend_request.requester_id)
+    db.session.add(new_friendship)
 
-    db.session.add(friendship1)
-    db.session.add(friendship2)
+    # ✅ Fetch the requester's details (the person who sent the request)
+    requester_user = User.query.get(friend_request.requester_id)
+    if not requester_user:
+        return jsonify({"error": "Requester user not found"}), 404
 
-    # Notify the requester that the request was accepted
+    # ✅ Fetch the current user (the recipient accepting the request)
+    recipient_user = User.query.get(current_user_id)
+    if not recipient_user:
+        return jsonify({"error": "Recipient user not found"}), 404
+
+    # ✅ Notify the requester that the request was accepted
     new_notification = Notification(
-        user_id=friend_request.requester_id,
-        message=f"{friend_request.recipient.name} accepted your friend request!",
-        type="friend_accept"
+        user_id=friend_request.requester_id,  # Notify the requester
+        message=f"{recipient_user.name} accepted your friend request!",  # Correct message
+        type="friend_accept",
+        friend_request_id=friend_request.id  # Associate notification with request
     )
     db.session.add(new_notification)
 
     db.session.commit()
 
     return jsonify({"message": "Friend request accepted!"}), 200
+
 
 
 #Fetch friends list
