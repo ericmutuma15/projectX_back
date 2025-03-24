@@ -107,10 +107,12 @@ class Notification(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     message = db.Column(db.String(255), nullable=False)
     type = db.Column(db.String(50), nullable=False)
-    friend_request_id = db.Column(db.Integer, db.ForeignKey('friend_requests.id'), nullable=False)  # ✅ New Field
+    friend_request_id = db.Column(db.Integer, db.ForeignKey('friend_requests.id'), nullable=False)
+    read = db.Column(db.Boolean, default=False)  # New field to track read status
 
     # Relationships (optional, but useful)
     friend_request = db.relationship("FriendRequest", backref="notifications")
+
     
 
 

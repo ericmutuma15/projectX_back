@@ -717,7 +717,7 @@ def get_notifications():
     current_user_id = get_jwt_identity()
     base_url = request.host_url  # e.g., "http://127.0.0.1:5555/"
 
-    # Create aliases for the User model for double join:
+    # Create aliases for the User model
     requester = aliased(User)
     acceptor = aliased(User)
 
@@ -727,17 +727,21 @@ def get_notifications():
             Notification.message,
             Notification.type,
             Notification.friend_request_id,
+            Notification.read,
             FriendRequest.status.label("friend_request_status"),
-            # For notifications of type "friend_accept", use the acceptor's name; otherwise, use the requester's name.
+            # For "friend_accept" notifications, use the acceptor's info; otherwise, use the requester's info.
             case(
                 (Notification.type == "friend_accept", acceptor.name),
                 else_=requester.name
             ).label("originator_name"),
-            # Similarly for profile picture.
             case(
                 (Notification.type == "friend_accept", acceptor.picture),
                 else_=requester.picture
-            ).label("originator_profile_pic")
+            ).label("originator_profile_pic"),
+            case(
+                (Notification.type == "friend_accept", acceptor.id),
+                else_=requester.id
+            ).label("originator_id")
         )
         .outerjoin(FriendRequest, FriendRequest.id == Notification.friend_request_id)
         .outerjoin(requester, requester.id == FriendRequest.requester_id)
@@ -761,12 +765,13 @@ def get_notifications():
                 f"{base_url}static/{notif.originator_profile_pic}"
                 if notif.originator_profile_pic
                 else f"{base_url}static/default.jpg"
-            )
+            ),
+            "originator_id": notif.originator_id,
+            "read": notif.read
         }
         for notif in notifications
     ]
 
-    #print(f"Notifications for user {current_user_id}: {notification_list}")
     return jsonify(notification_list), 200
 
 
@@ -848,6 +853,14 @@ def get_friends():
     ]
 
     return jsonify(friends_list), 200
+
+@app.route('/api/mark-all-read', methods=['POST'])
+@jwt_required()
+def mark_all_read():
+    current_user_id = get_jwt_identity()
+    Notification.query.filter_by(user_id=current_user_id, read=False).update({"read": True})
+    db.session.commit()
+    return jsonify({"message": "All notifications marked as read"}), 200
 
 
 if __name__ == "__main__":
