@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory, url_for
+from flask import Flask, request, jsonify, send_from_directory, url_for, Blueprint
+from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_login import login_required, current_user
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
@@ -24,6 +26,7 @@ app.config.from_object(Config)
 
 # Enable Cross-Origin Resource Sharing for React Frontend
 CORS(app, resources={
+    r"/*": {"origins": "*"},
     r"/api/*": {"origins": ["http://127.0.0.1:5173", "http://localhost:5173", "https://projectx-back.onrender.com"]},
     r"/static/images/*": {"origins": "*"},
     r"/static/sidebar_images/*": {"origins": "*"},
@@ -31,6 +34,8 @@ CORS(app, resources={
 }, supports_credentials=True, 
 allow_headers=["Content-Type", "Authorization", "Access-Control-Allow-Origin"], 
 methods=["GET", "POST", "OPTIONS"])
+socketio = SocketIO(app, cors_allowed_origins="*")
+messages_bp = Blueprint('messages', __name__)
 
 # JWT Configuration
 jwt = JWTManager(app)
@@ -678,11 +683,20 @@ def send_friend_request():
 @jwt_required()
 def get_user_by_id(user_id):
     try:
+        # Get the ID of the currently authenticated user
+        current_user_id = get_jwt_identity()
+
         # Fetch the user from the database
         user = User.query.get(user_id)
 
         if not user:
             return jsonify({"error": "User not found"}), 404
+
+        # Check if the logged-in user and the requested user are friends
+        is_friend = Friendship.query.filter(
+            ((Friendship.user_id == current_user_id) & (Friendship.friend_id == user_id)) |
+            ((Friendship.user_id == user_id) & (Friendship.friend_id == current_user_id))
+        ).first() is not None
 
         # Generate a URL for the profile picture
         picture_url = (
@@ -690,19 +704,20 @@ def get_user_by_id(user_id):
             if user.picture else None
         )
 
-        # Return user details
+        # Return user details, including is_friend status
         return jsonify({
             'id': user.id,
             'name': user.name,
             'description': user.description,
             'location': user.location,
             'picture': picture_url,
+            'is_friend': is_friend,  # Added field
         }), 200
 
     except Exception as e:
         app.logger.error(f"Error fetching user data: {str(e)}")
         return jsonify({"error": f"Error fetching user data: {str(e)}"}), 500
-
+    
 
 from flask import request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -862,7 +877,178 @@ def mark_all_read():
     db.session.commit()
     return jsonify({"message": "All notifications marked as read"}), 200
 
+# ----- Messaging API Endpoints -----
+
+# ---------------------------
+# Socket.IO event handlers
+@socketio.on("connect")
+def handle_connect():
+    print("Client connected")
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    print("Client disconnected")
+
+@socketio.on("join_chat")
+def handle_join_chat(data):
+    user_id = data.get("user_id")
+    join_room(f"user_{user_id}")
+    print(f"User {user_id} joined room user_{user_id}")
+
+@socketio.on("leave_chat")
+def handle_leave_chat(data):
+    user_id = data.get("user_id")
+    leave_room(f"user_{user_id}")
+    print(f"User {user_id} left room user_{user_id}")
+
+
+# --- Messaging Endpoints ---
+
+@app.route("/messages/send", methods=["POST"])
+@jwt_required()
+def send_message():
+    data = request.json
+    receiver_id = data.get("receiver_id")
+    message_text = data.get("message")
+    media_url = data.get("media_url")
+    media_type = data.get("media_type")
+    
+    if not receiver_id or not message_text:
+        return jsonify({"error": "Receiver and message are required"}), 400
+
+    current_user_id = get_jwt_identity()
+    message = Message(
+        sender_id=current_user_id,
+        receiver_id=receiver_id,
+        message=message_text,
+        media_url=media_url,
+        media_type=media_type
+    )
+    db.session.add(message)
+    db.session.commit()
+
+    # Get sender info to include in event payload
+    sender = User.query.get(current_user_id)
+    
+    socketio.emit("new_message", {
+        "id": message.id,
+        "sender_id": current_user_id,
+        "receiver_id": receiver_id,
+        "message": message_text,
+        "media_url": media_url,
+        "media_type": media_type,
+        "timestamp": message.timestamp.isoformat(),
+        "is_read": message.is_read,
+        "sender_profile_pic": sender.picture,
+        "sender_name": sender.name
+    }, room=f"user_{receiver_id}")
+
+    return jsonify({"message": "Message sent successfully"}), 201
+
+@app.route("/messages/<int:user_id>", methods=["GET"])
+@jwt_required()
+def get_messages(user_id):
+    current_user_id = get_jwt_identity()
+    messages = Message.query.filter(
+        ((Message.sender_id == current_user_id) & (Message.receiver_id == user_id)) |
+        ((Message.sender_id == user_id) & (Message.receiver_id == current_user_id))
+    ).order_by(Message.timestamp.asc()).all()
+
+    result = []
+    for msg in messages:
+        sender = User.query.get(msg.sender_id)
+        result.append({
+            "id": msg.id,
+            "sender_id": msg.sender_id,
+            "receiver_id": msg.receiver_id,
+            "message": msg.message,
+            "media_url": msg.media_url,
+            "media_type": msg.media_type,
+            "timestamp": msg.timestamp.isoformat(),
+            "is_read": msg.is_read,
+            "sender_profile_pic": sender.picture,
+            "sender_name": sender.name
+        })
+    return jsonify(result)
+
+@app.route("/messages/read/<int:sender_id>", methods=["PUT"])
+@jwt_required()
+def mark_messages_as_read(sender_id):
+    current_user_id = get_jwt_identity()
+    messages = Message.query.filter_by(receiver_id=current_user_id, sender_id=sender_id, is_read=False).all()
+    for msg in messages:
+        msg.is_read = True
+    db.session.commit()
+    return jsonify({"message": "Messages marked as read"}), 200
+
+# --- File Upload Endpoint ---
+
+@app.route("/upload", methods=["POST"])
+@jwt_required()  # Optionally protect the endpoint
+def upload_file():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
+
+    filename = secure_filename(file.filename)
+    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    file.save(file_path)
+
+    # Create URL for the uploaded file
+    file_url = url_for("uploaded_file", filename=filename, _external=True)
+    ext = filename.rsplit(".", 1)[-1].lower()
+    if ext in ["jpg", "jpeg", "png", "gif"]:
+        media_type = "image"
+    elif ext in ["mp4", "webm", "ogg"]:
+        media_type = "video"
+    else:
+        media_type = "file"
+    return jsonify({"media_url": file_url, "media_type": media_type}), 200
+
+@app.route("/uploads/<path:filename>")
+def uploaded_file(filename):
+    return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
+
+
+@app.route("/api/chats", methods=["GET"])
+@jwt_required()
+def get_chats():
+    current_user_id = get_jwt_identity()
+    # Query all messages where current user is either sender or receiver.
+    messages = Message.query.filter(
+        (Message.sender_id == current_user_id) | (Message.receiver_id == current_user_id)
+    ).all()
+
+    # Use a set to collect unique partner IDs.
+    partner_ids = set()
+    for msg in messages:
+        if msg.sender_id != current_user_id:
+            partner_ids.add(msg.sender_id)
+        if msg.receiver_id != current_user_id:
+            partner_ids.add(msg.receiver_id)
+
+    # Build the chat list with user details.
+    chats = []
+    for pid in partner_ids:
+        user = User.query.get(pid)
+        if user:
+            # Generate a URL for the user's profile picture if needed.
+            picture_url = (
+                url_for("serve_image", filename=user.picture, _external=True)
+                if user.picture else None
+            )
+            chats.append({
+                "id": user.id,
+                "name": user.name,
+                "profile_pic": picture_url or "/default-profile.png"
+            })
+
+    return jsonify(chats), 200
+
+
 
 if __name__ == "__main__":
     db.create_all()
-    app.run(debug=True, port=5555)
+    socketio.run(app, debug=True, port=5555)

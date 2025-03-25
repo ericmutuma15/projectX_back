@@ -78,12 +78,17 @@ class Message(db.Model):
     sender_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     receiver_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     message = db.Column(db.Text, nullable=True)
-    media_type = db.Column(db.String(10), nullable=True)
+    media_type = db.Column(db.String(10), nullable=True)  # image, video, audio
     media_url = db.Column(db.String(300), nullable=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    is_read = db.Column(db.Boolean, default=False)  # New field to track read status
+
+    sender = db.relationship("User", foreign_keys=[sender_id])
+    receiver = db.relationship("User", foreign_keys=[receiver_id])
 
     def __repr__(self):
         return f"<Message from {self.sender_id} to {self.receiver_id}>"
+
 
 class FriendRequest(db.Model):
     __tablename__ = 'friend_requests'
