@@ -44,12 +44,12 @@ app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
 app.config["JWT_COOKIE_CSRF_PROTECT"] = False  # Disable CSRF for testing
 app.config["JWT_ACCESS_COOKIE_NAME"] = "access_token"
 app.config["JWT_REFRESH_COOKIE_NAME"] = "refresh_token"
-app.config["JWT_COOKIE_SECURE"] = False  # Set to True in production
+app.config["JWT_COOKIE_SECURE"] = True  # Set to True in production
 app.config["JWT_HEADER_NAME"] = "Authorization"
 app.config["JWT_HEADER_TYPE"] = "Bearer"
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=24)  # Access token expiration
 app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=30)  # Refresh token expiration
-app.config['JWT_COOKIE_SAMESITE'] = 'Lax'  # 'Strict' or 'Lax' based on your needs
+app.config['JWT_COOKIE_SAMESITE'] = 'None'  # 'Strict' or 'Lax' based on your needs
 app.config['JWT_ACCESS_COOKIE_PATH'] = '/'  # Path for the access token cookie
 app.config['JWT_REFRESH_COOKIE_PATH'] = '/'  # Path for the refresh token cookie
 # Database Configuration
@@ -145,10 +145,8 @@ def login():
 
     # Set cookies with proper properties
     response = jsonify({"message": "Login successful"})
-
-    # Set the cookies with the proper flags for cross-origin requests
-    set_access_cookies(response, access_token, max_age=timedelta(hours=1), secure=True, samesite="None", httponly=True)
-    set_refresh_cookies(response, refresh_token, max_age=timedelta(days=30), secure=True, samesite="None", httponly=True)
+    set_access_cookies(response, access_token, max_age=timedelta(hours=1))
+    set_refresh_cookies(response, refresh_token, max_age=timedelta(days=30))
 
     return response, 200
 
