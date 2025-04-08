@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory, url_for, Blueprint
+from flask import Flask, request, jsonify, send_from_directory, url_for, Blueprint, abort
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_login import login_required, current_user
 from flask_sqlalchemy import SQLAlchemy
@@ -74,15 +74,16 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 # Routes
-@app.route('/')
-def home():
-    return send_from_directory('static', 'index.html')
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_react(path):
+    file_path = os.path.join(app.static_folder, path)
 
-@app.route('/<path:path>')
-def serve_static(path):
-    if not path.startswith('api/'):
-        return send_from_directory(app.static_folder, 'index.html')
-    return send_from_directory(app.static_folder, path)
+    if path != "" and os.path.exists(file_path):
+        return send_from_directory(app.static_folder, path)
+    
+    # fallback for React Router
+    return send_from_directory(app.static_folder, "index.html")
 
 # Refresh token endpoint
 @app.route('/api/refresh', methods=['POST'])
