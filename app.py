@@ -803,7 +803,6 @@ def accept_friend_request():
         return jsonify({"error": "Request ID is required"}), 400
 
     friend_request = FriendRequest.query.get(request_id)
-
     if not friend_request:
         return jsonify({"error": "Friend request not found"}), 404
 
@@ -813,29 +812,30 @@ def accept_friend_request():
     if friend_request.status == "accepted":
         return jsonify({"error": "Friend request already accepted"}), 400
 
-    # ✅ Accept friend request
+    # Accept friend request
     friend_request.status = "accepted"
 
-    # ✅ Create friendship (only one record needed)
-    new_friendship = Friendship(user_id=current_user_id, friend_id=friend_request.requester_id)
-    db.session.add(new_friendship)
+    # Create reciprocal friendship in both directions.
+    new_friendship_1 = Friendship(user_id=current_user_id, friend_id=friend_request.requester_id)
+    new_friendship_2 = Friendship(user_id=friend_request.requester_id, friend_id=current_user_id)
+    db.session.add_all([new_friendship_1, new_friendship_2])
 
-    # ✅ Fetch the requester's details (the person who sent the request)
+    # Fetch the requester's details
     requester_user = User.query.get(friend_request.requester_id)
     if not requester_user:
         return jsonify({"error": "Requester user not found"}), 404
 
-    # ✅ Fetch the current user (the recipient accepting the request)
+    # Fetch the current (recipient) user
     recipient_user = User.query.get(current_user_id)
     if not recipient_user:
         return jsonify({"error": "Recipient user not found"}), 404
 
-    # ✅ Notify the requester that the request was accepted
+    # Notify the requester that the friend request was accepted
     new_notification = Notification(
         user_id=friend_request.requester_id,  # Notify the requester
-        message=f"{recipient_user.name} accepted your friend request!",  # Correct message
+        message=f"{recipient_user.name} accepted your friend request!",
         type="friend_accept",
-        friend_request_id=friend_request.id  # Associate notification with request
+        friend_request_id=friend_request.id  # Associate the notification with the request
     )
     db.session.add(new_notification)
 
