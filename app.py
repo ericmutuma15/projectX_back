@@ -145,8 +145,10 @@ def login():
 
     # Set cookies with proper properties
     response = jsonify({"message": "Login successful"})
-    set_access_cookies(response, access_token, max_age=timedelta(hours=1))
-    set_refresh_cookies(response, refresh_token, max_age=timedelta(days=30))
+
+    # Set the cookies with the proper flags for cross-origin requests
+    set_access_cookies(response, access_token, max_age=timedelta(hours=1), secure=True, samesite="None", httponly=True)
+    set_refresh_cookies(response, refresh_token, max_age=timedelta(days=30), secure=True, samesite="None", httponly=True)
 
     return response, 200
 
