@@ -27,7 +27,7 @@ app.config.from_object(Config)
 # Enable Cross-Origin Resource Sharing for React Frontend
 CORS(app, resources={
     r"/*": {"origins": "*"},
-    r"/api/*": {"origins": ["http://127.0.0.1:5173", "http://localhost:5173", "https://projectx-back.onrender.com"]},
+    r"/api/*": {"origins": ["http://127.0.0.1:5173", "http://localhost:5173","https://desirelink.vercel.app", "https://projectx-back.onrender.com"]},
     r"/static/images/*": {"origins": "*"},
     r"/static/sidebar_images/*": {"origins": "*"},
     r"/static/uploads/*": {"origins": "*"}
